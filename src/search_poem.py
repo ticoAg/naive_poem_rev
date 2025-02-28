@@ -4,15 +4,14 @@ import json
 from typing import Any
 
 from pymilvus import DataType, MilvusClient
-from milvus_model.hybrid import BGEM3EmbeddingFunction
+from milvus_model.hybrid.bge_m3 import BGEM3EmbeddingFunction
 import numpy as np
+from datasets import load_dataset, Dataset
 
 
-def load_data() -> tuple[list[dict], list[str]]:
-    with open("data/TangShi.json", "r", encoding="utf-8") as file:
-        data_list = json.load(file)
-        text = [data["paragraphs"][0] for data in data_list]
-    return data_list, text
+def load_data() -> Dataset:
+    data_list = load_dataset("ticoAg/cotinus-poem")
+    return data_list["train"][:1000]
 
 
 def vectorize_text(texts: list[str], model_name="BAAI/bge-large-zh-v1.5"):
@@ -23,13 +22,39 @@ def vectorize_text(texts: list[str], model_name="BAAI/bge-large-zh-v1.5"):
     return embed_vectors
 
 
+def flatten_paragraphs(batch):
+    """
+    Flatten paragraphs for a batch of data items using NumPy for parallel processing.
+
+    Args:
+        batch (dict): A batch of data where each key maps to a list of values.
+                      For example, {"id": [1, 2], "content": [[...], [...]]}.
+
+    Returns:
+        dict: A dictionary with flattened paragraphs for the entire batch.
+    """
+    flattened = {k: [] for k in batch}
+    for i in range(len(batch["title"])):
+        data_item = {key: batch[key][i] for key in batch}
+        _dict = {k: v for k, v in data_item.items() if k != "content"}
+        paragraphs = [para for sub_chapter in data_item["content"] for para in sub_chapter["paragraphs"]]
+        num_paragraphs = len(paragraphs)
+        for key, value in _dict.items():
+            flattened[key].extend([value] * num_paragraphs)
+        flattened["content"].extend(paragraphs)
+    return flattened
+
+
 def vec_texts():
-    ori_data, text = load_data()
+    ori_data: Dataset = load_data()
+    single_para_data = ori_data.map(flatten_paragraphs, batched=True, num_proc=os.cpu_count())
+
+    text = single_para_data["content"]
     vectors = vectorize_text(text)
-    for data, vector in zip(ori_data, vectors["dense"]):
+    for data, vector in zip(single_para_data, vectors["dense"]):
         data["vector"] = vector.tolist()
     with open(".cache/TangShi_vector.json", "w", encoding="utf-8") as file_obj:
-        json.dump(ori_data, file_obj, ensure_ascii=False, indent=4)  # type: ignore
+        json.dump(single_para_data, file_obj, ensure_ascii=False, indent=4)  # type: ignore
 
 
 def create_collection():
@@ -263,9 +288,9 @@ if __name__ == "__main__":
     # 指定集合名称
     collection_name = "TangShi"
 
-    # vec_texts()
-    # create_collection()
-    # insert_vec_to_collection()
-    # create_index()
+    vec_texts()
+    create_collection()
+    insert_vec_to_collection()
+    create_index()
     load_collection()
     search_example()
