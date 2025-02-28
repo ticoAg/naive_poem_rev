@@ -1,2 +1,7 @@
-.vscode
-.infinity_cache
+.vscode/
+.venv/
+.idea/
+.cache/
+scripts/volumes
+.env
+.DS_Store
