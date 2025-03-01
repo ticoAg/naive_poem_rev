@@ -5,3 +5,4 @@
 scripts/volumes
 .env
 .DS_Store
+__pycache__/
