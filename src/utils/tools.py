@@ -42,6 +42,18 @@ def timer_decorator(func: Callable) -> Callable:
     return sync_wrapper
 
 
+def chunked_list(lst: list[Any], _chunk_size: int = 32) -> Any:
+    """
+    将给定的列表按照指定的块大小分割成多个子列表。
+
+    :param lst: 需要被分割的列表。
+    :param _chunk_size: 每个子列表的大小。
+    :return: 生成器，用于迭代地获取每个子列表。
+    """
+    for i in range(0, len(lst), _chunk_size):
+        yield lst[i : i + _chunk_size]
+
+
 # 示例使用
 if __name__ == "__main__":
 
