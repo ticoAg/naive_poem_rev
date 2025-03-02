@@ -22,7 +22,9 @@ api_sem = Semaphore(10)
 
 @timer_decorator
 def load_data() -> Dataset:
+    logger.info("Loading dataset from Hugging Face...")
     data_list = load_dataset("ticoAg/cotinus-poem")
+    logger.success("Dataset loaded successfully.")
     return data_list["train"]
 
 
@@ -73,6 +75,10 @@ async def vectorize_text(texts: List[str]) -> List:
     异步并发处理文本列表，生成嵌入向量。
     """
     embed_model = os.getenv("DEFAULT_EMBEDDING_MODEL")
+    if not embed_model:
+        logger.error("Embedding model not found in environment variables.")
+        raise ValueError("DEFAULT_EMBEDDING_MODEL is not set.")
+
     vectors = []
     chunk_size = 1024
     max_concurrent_tasks = 32  # 控制最大并发任务数
@@ -80,17 +86,20 @@ async def vectorize_text(texts: List[str]) -> List:
     text_chunks = chunked_list(texts, chunk_size)
     tasks = [
         process_chunk(
-            "%s/%s" % (idx, len(texts) // chunk_size),
+            f"{idx}/{len(texts)//chunk_size}",
             text_chunk,
             embed_model,
             semaphore,
         )
         for idx, text_chunk in enumerate(text_chunks)
     ]
-    results = await asyncio.gather(*tasks)  # 按任务提交顺序返回结果
-    vectors = []
-    for chunk_vectors in results:
-        vectors.extend(chunk_vectors)  # 保证分块顺序
+    try:
+        results = await asyncio.gather(*tasks)  # 按任务提交顺序返回结果
+        for chunk_vectors in results:
+            vectors.extend(chunk_vectors)  # 保证分块顺序
+    except Exception as e:
+        logger.exception(f"Error occurred during vectorization: {e}")
+        raise
     return vectors
 
 
@@ -120,12 +129,13 @@ async def process_dataset() -> list[dict]:
 
 def create_collection():
     if milvus_client.has_collection(collection_name):
-        logger.info(f"Collection {collection_name} already exists")
+        logger.info(f"Collection {collection_name} already exists.")
         try:
             milvus_client.drop_collection(collection_name)
-            logger.success(f"Deleted the collection {collection_name}")
+            logger.success(f"Deleted the collection {collection_name}.")
         except Exception as e:
             logger.exception(f"Error occurred while dropping collection: {e}")
+            return
 
     schema = MilvusClient.create_schema(
         auto_id=False, enable_dynamic_field=True, description=collection_name
@@ -154,7 +164,7 @@ def create_collection():
         milvus_client.create_collection(
             collection_name=collection_name, schema=schema, shards_num=2
         )
-        logger.success(f"Created Collection: {collection_name}")
+        logger.success(f"Created Collection: {collection_name}.")
     except Exception as e:
         logger.exception(f"Error occurred while creating collection: {e}")
 
@@ -225,127 +235,39 @@ def load_collection():
 @timer_decorator
 async def search_example():
     def print_vector_results(_res):
-        """
-        打印向量搜索结果。可变位置参数是输出的文本字段，不包括"distance"字段
-        """
-        # hit是搜索结果中的每一个匹配的实体
         _res: list[Any] = [hit["entity"] for hit in _res[0]]
         for item in _res:
-            print(f"title: {item['title']}")
-            print(f"author: {item['author']}")
-            print(f"content: {item['content']}")
-            print("-" * 50)
-        print(f"数量：{len(_res)}")
+            logger.info(
+                f"title: {item['title']}, author: {item['author']}, content: {item['content']}"
+            )
+        logger.info(f"Total results: {len(_res)}")
 
-    def print_scalar_results(res):
-        """
-        打印标量搜索结果。可变位置参数是输出的文本字段，不包括"distance"字段
-        """
-        for hit in res:
-            print(f"title: {hit['title']}")
-            print(f"author: {hit['author']}")
-            print(f"paragraphs: {hit['paragraphs']}")
-            print("-" * 50)
-        print(f"数量：{len(res)}")
-
-    @timer_decorator
-    async def vec_search_example_1():
-        # 搜索案例1，向量搜索
-        res1 = milvus_client.search(
+    async def vec_search(vectors, search_params, filter_expr=None):
+        res = milvus_client.search(
             collection_name=collection_name,
-            data=query_vectors,  # 指定查询向量
-            anns_field="vector",  # 指定搜索的字段
-            search_params={
-                "metric_type": "IP",  # 设置度量类型
-                "params": {
-                    "nprobe": 16
-                },  # 指定在搜索过程中要查询的聚类单元数量，增加nprobe值可以提高搜索精度，但会降低搜索速度
-            },  # 设置搜索参数
-            limit=limit,
-            output_fields=output_fields,
+            data=vectors,
+            anns_field="vector",
+            search_params=search_params,
+            limit=5,
+            filter=filter_expr,
+            output_fields=["author", "title", "content"],
         )
-        print_vector_results(res1)
-        print("=" * 100)
-
-    @timer_decorator
-    async def vec_search_example_2(param):
-        # 搜索案例2，向量搜索，限制distance范围
-        res2 = milvus_client.search(
-            collection_name=collection_name,  # 指定查询向量
-            data=query_vectors,  # 指定搜索的字段
-            anns_field="vector",  # 设置搜索参数
-            search_params=param,  # 删除limit参数
-            output_fields=output_fields,
-        )
-        print_vector_results(res2)
-        print("=" * 100)
-
-    @timer_decorator
-    async def vec_search_example_3(param):
-        # 搜索案例3，向量搜索+设置过滤条件
-        _filter = f"author == '李白'"
-        logger.debug("过滤条件: %s" % _filter)
-
-        res3 = milvus_client.search(
-            collection_name=collection_name,  # 指定查询向量
-            data=query_vectors,  # 指定搜索的字段
-            anns_field="vector",  # 设置搜索参数
-            search_params=param,
-            limit=limit,
-            filter=_filter,
-            output_fields=output_fields,
-        )
-        print_vector_results(res3)
-        print("=" * 100)
-
-    @timer_decorator
-    async def scalar_search_example_1():
-        # 搜索案例4，标量搜索
-        _filter = f"paragraphs like '%雨%'"
-        logger.info("过滤条件: %s" % _filter)
-
-        res4 = milvus_client.query(
-            collection_name=collection_name,
-            filter=_filter,
-            output_fields=output_fields,
-            limit=limit,
-        )
-        print_scalar_results(res4)
-        print("=" * 100)
-
-    @timer_decorator
-    async def scalar_search_example_2():
-        # 搜索案例5，标量搜索
-        # 构建查询表达式2，包含指定文本+设置过滤条件
-        _filter = f"author == '李白' && paragraphs like '%雨%'"
-        logger.debug("过滤条件: %s" % _filter)
-        res5 = milvus_client.query(
-            collection_name=collection_name,
-            filter=_filter,
-            output_fields=output_fields,
-            limit=limit,
-        )
-        print_scalar_results(res5)
-        print("=" * 100)
+        print_vector_results(res)
 
     text = "梅雨淅淅沥沥的下,有点冷"
-    logger.info("Query: %s" % text)
+    logger.info(f"Query: {text}")
     query_vectors = await vectorize_text([text])
-    limit = 5
-    output_fields = ["author", "title", "content"]
 
-    await vec_search_example_1()
-
-    # 修改搜索参数，设置距离的范围
-    search_params = {
-        "metric_type": "IP",
-        "params": {"nprobe": 16, "radius": 0.2, "range_filter": 1.0},
-    }
-    await vec_search_example_2(search_params)
-    await vec_search_example_3(search_params)
-
-    await scalar_search_example_1()
-    await scalar_search_example_2()
+    # 向量搜索示例
+    await vec_search(query_vectors, {"metric_type": "IP", "params": {"nprobe": 16}})
+    await vec_search(
+        query_vectors,
+        {
+            "metric_type": "IP",
+            "params": {"nprobe": 16, "radius": 0.2, "range_filter": 1.0},
+        },
+        filter_expr="author == '李白'",
+    )
 
 
 async def main():
