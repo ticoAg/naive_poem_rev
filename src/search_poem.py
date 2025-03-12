@@ -12,6 +12,7 @@ from datasets import load_dataset, Dataset
 from dotenv import load_dotenv
 from tqdm import tqdm
 
+from src.models.rerank import ReRanker
 from utils.tools import timer_decorator, chunked_list
 from loguru import logger
 
@@ -112,8 +113,8 @@ async def process_dataset() -> list[dict]:
     single_para_data = ori_data.map(
         flatten_paragraphs, batched=True, num_proc=os.cpu_count()
     ).filter(
-        lambda x: 8 <= len(x["content"]) <= 512
-    )  # 过滤单句小于8的句子
+        lambda x: 8 <= len(x["content"]) <= 512 and x["title"] != ""
+    )  # 过滤单句小于8的句子 且title字段不为空""
 
     text = single_para_data["content"]
     vectors: list = await vectorize_text(text)
@@ -234,11 +235,11 @@ def load_collection():
 
 @timer_decorator
 async def search_example():
-    def print_vector_results(_res):
-        _res: list[Any] = [hit["entity"] for hit in _res[0]]
-        for item in _res:
+    def print_vector_results(res):
+        _res: list[Any] = [hit["entity"] for hit in res]
+        for idx, item in enumerate(_res):
             logger.info(
-                f"title: {item['title']}, author: {item['author']}, content: {item['content']}"
+                f"title: {item['title']}, author: {item['author']}, content: {item['content']}, 相关度: {res[idx]['relevance_score']}"
             )
         logger.info(f"Total results: {len(_res)}")
 
@@ -251,8 +252,18 @@ async def search_example():
             limit=5,
             filter=filter_expr,
             output_fields=["author", "title", "content"],
+        )[0]
+        doc_rank = await reranker.rerank(
+            text, [i["entity"]["content"] for i in res], top_n=5
         )
-        print_vector_results(res)
+        sorted_data = []
+        for rank_item in doc_rank:
+            ori_item = {
+                "relevance_score": rank_item["relevance_score"],
+                **res[rank_item["index"]],
+            }
+            sorted_data.append(ori_item)
+        print_vector_results(sorted_data)
 
     text = "梅雨淅淅沥沥的下,有点冷"
     logger.info(f"Query: {text}")
@@ -266,7 +277,7 @@ async def search_example():
             "metric_type": "IP",
             "params": {"nprobe": 16, "radius": 0.2, "range_filter": 1.0},
         },
-        filter_expr="author == '李白'",
+        filter_expr="author == '苏轼'",
     )
 
 
@@ -283,6 +294,7 @@ if __name__ == "__main__":
     # 创建client实例
     milvus_client = MilvusClient(uri="http://localhost:19530")
     async_openai_client = AsyncOpenAI()
+    reranker = ReRanker()
 
     collection_name = "poem"
     asyncio.run(main())

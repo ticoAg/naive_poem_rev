@@ -3,6 +3,8 @@ import asyncio
 from functools import wraps
 from typing import Callable, Any
 
+from openai import AsyncOpenAI
+
 
 def timer_decorator(func: Callable) -> Callable:
     """
@@ -54,7 +56,6 @@ def chunked_list(lst: list[Any], _chunk_size: int = 32) -> Any:
         yield lst[i : i + _chunk_size]
 
 
-# 示例使用
 if __name__ == "__main__":
 
     @timer_decorator
